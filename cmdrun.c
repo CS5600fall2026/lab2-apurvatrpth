@@ -103,6 +103,7 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
         (void)pass_pipefd;      // get rid of unused warning
 	pid_t pid = -1;		// process ID for child
 	int pipefd[2];		// file descriptors for this process's pipe
+	int fd;
 
 	/* EXERCISE 4: Complete this function!
 	 * We've written some of the skeleton for you, but feel free to
@@ -216,6 +217,34 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 		// Note: the child uses _exit() and not exit(). exit() would
 		// flush stdio buffers copied from the parent, which can make
 		// the shell read input lines twice when stdin is a file.
+
+		// Redirections. Index of redirect_filename[] is the fd.
+		for (fd = 0; fd < 3; fd++) {
+			int flags, newfd;
+			if (!cmd->redirect_filename[fd])
+				continue;
+			if (fd == STDIN_FILENO)
+				flags = O_RDONLY;
+			else
+				flags = O_WRONLY | O_CREAT | O_TRUNC;
+			newfd = open(cmd->redirect_filename[fd], flags, 0666);
+			if (newfd < 0) {
+				perror(cmd->redirect_filename[fd]);
+				_exit(1);
+			}
+			if (newfd != fd) {
+				dup2(newfd, fd);
+				close(newfd);
+			}
+		}
+
+		// Subshell: run the inner command line in this child, then
+		// exit. We must not return, or the child would carry on as a
+		// second copy of the shell. Status is 0 or 5 as per the spec.
+		if (cmd->subshell) {
+			int status = cmd_line_exec(cmd->subshell);
+			_exit(status == 0 ? 0 : 5);
+		}
 
 		// Null command: nothing to run.
 		if (!cmd->argv[0])
