@@ -214,6 +214,19 @@ cmd_free(command_t *cmd)
 		return;
 
 	/* Your code here. */
+	// argv[] entries and redirect filenames were allocated with strdup().
+	// argv is NULL-terminated (cmd_alloc() zeroes the whole struct).
+	for (i = 0; i < MAXTOKENS && cmd->argv[i]; i++)
+		free(cmd->argv[i]);
+
+	for (i = 0; i < 3; i++)
+		free(cmd->redirect_filename[i]);
+
+	// Free the subshell command list and the rest of this list.
+	cmd_free(cmd->subshell);
+	cmd_free(cmd->next);
+
+	free(cmd);
 }
 
 
