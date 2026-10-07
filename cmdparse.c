@@ -307,6 +307,15 @@ cmd_parse(parsestate_t *parsestate)
              //     have been given fit together. (It may be helpful to
              //     look over cmdparse.h again.)
             /* Your code here. */
+			// A subshell cannot follow normal tokens or another subshell,
+			// e.g. "echo ( a )" and "( a ) ( b )" are errors.
+			if (i > 0 || cmd->subshell)
+				goto error;
+			// Parse everything up to the matching ')'.
+			// cmd_line_parse() consumes the ')' token itself.
+			cmd->subshell = cmd_line_parse(parsestate, 1);
+			if (!cmd->subshell)
+				goto error;
 			break;
 		default:
 			parse_ungettoken(parsestate);
@@ -318,7 +327,7 @@ cmd_parse(parsestate_t *parsestate)
 	// NULL-terminate the argv list
 	cmd->argv[i] = 0;
 
-	if (i == 0) {
+	if (i == 0 && !cmd->subshell) {
 		/* Empty command */
 		cmd_free(cmd);
 		return NULL;
