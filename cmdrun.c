@@ -205,6 +205,29 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 	//    in which directory would foo appear, /tmp or $HOME?
 	//
 	/* Your code here */
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+
+	if (pid == 0) {
+		// Child.
+		// Note: the child uses _exit() and not exit(). exit() would
+		// flush stdio buffers copied from the parent, which can make
+		// the shell read input lines twice when stdin is a file.
+
+		// Null command: nothing to run.
+		if (!cmd->argv[0])
+			_exit(0);
+
+		execvp(cmd->argv[0], cmd->argv);
+		// execvp() only returns on error.
+		perror(cmd->argv[0]);
+		_exit(1);
+	}
+
+	// Parent: nothing more to do yet.
 
 	// return the child process ID
 	return pid;
@@ -241,18 +264,66 @@ cmd_line_exec(command_t *cmdlist)
 {
 	int cmd_status = 0;	    // status of last command executed
 	int pipefd = STDIN_FILENO;  // read end of last pipe
+	controlop_t prev_op = CMD_END;  // operator before the current command
+	int skipped = 0;		// was the previous command skipped?
 
 	while (cmdlist) {
 		int wp_status;	    // Use for waitpid's status argument!
 				    // Read the manual page for waitpid() to
 				    // see how to get the command's exit
 				    // status (cmd_status) from this value.
+		int skip;
+		pid_t pid;
 
 		// EXERCISE 4: Fill out this function!
 		// If an error occurs in cmd_exec, feel free to abort().
 
 		/* Your code here */
 
+		// Decide if this command runs, like bash does:
+		//   "a && b" runs b only if a succeeded,
+		//   "a || b" runs b only if a failed,
+		//   "a | b"  skips b if a was skipped (same pipeline).
+		// A skipped command keeps the previous status, so in
+		// "false && echo x || echo y" the "echo y" still runs.
+		if (prev_op == CMD_AND)
+			skip = (cmd_status != 0);
+		else if (prev_op == CMD_OR)
+			skip = (cmd_status == 0);
+		else if (prev_op == CMD_PIPE)
+			skip = skipped;
+		else
+			skip = 0;
+
+		if (!skip) {
+			pid = cmd_exec(cmdlist, &pipefd);
+			if (pid < 0)
+				abort();
+
+			switch (cmdlist->controlop) {
+			case CMD_END:
+			case CMD_SEMICOLON:
+			case CMD_AND:
+			case CMD_OR:
+				while (waitpid(pid, &wp_status, 0) < 0) {
+					if (errno != EINTR)
+						abort();
+				}
+				if (WIFEXITED(wp_status))
+					cmd_status = WEXITSTATUS(wp_status);
+				else
+					cmd_status = 128 + WTERMSIG(wp_status);
+				break;
+			case CMD_BACKGROUND:
+			case CMD_PIPE:
+				// Do not wait; pretend it succeeded.
+				cmd_status = 0;
+				break;
+			}
+		}
+
+		skipped = skip;
+		prev_op = cmdlist->controlop;
 		cmdlist = cmdlist->next;
 	}
 
