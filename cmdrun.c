@@ -100,7 +100,6 @@
 static pid_t
 cmd_exec(command_t *cmd, int *pass_pipefd)
 {
-        (void)pass_pipefd;      // get rid of unused warning
 	pid_t pid = -1;		// process ID for child
 	int pipefd[2];		// file descriptors for this process's pipe
 	int fd;
@@ -114,6 +113,10 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 	// Return -1 if the pipe fails.
 	if (cmd->controlop == CMD_PIPE) {
 		/* Your code here*/
+		if (pipe(pipefd) < 0) {
+			perror("pipe");
+			return -1;
+		}
 	}
 
 
@@ -209,6 +212,10 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
+		if (cmd->controlop == CMD_PIPE) {
+			close(pipefd[0]);
+			close(pipefd[1]);
+		}
 		return -1;
 	}
 
@@ -218,7 +225,21 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 		// flush stdio buffers copied from the parent, which can make
 		// the shell read input lines twice when stdin is a file.
 
-		// Redirections. Index of redirect_filename[] is the fd.
+		// 1. stdout goes to this command's pipe.
+		if (cmd->controlop == CMD_PIPE) {
+			dup2(pipefd[1], STDOUT_FILENO);
+			close(pipefd[0]);
+			close(pipefd[1]);
+		}
+
+		// 2. stdin comes from the previous command's pipe.
+		if (*pass_pipefd != STDIN_FILENO) {
+			dup2(*pass_pipefd, STDIN_FILENO);
+			close(*pass_pipefd);
+		}
+
+		// 3. Redirections. Index of redirect_filename[] is the fd.
+		// These come after the pipe setup so "a > f | b" writes to f.
 		for (fd = 0; fd < 3; fd++) {
 			int flags, newfd;
 			if (!cmd->redirect_filename[fd])
@@ -256,7 +277,20 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 		_exit(1);
 	}
 
-	// Parent: nothing more to do yet.
+	// Parent.
+	// Close the write end of our pipe (only the child writes to it)
+	// and the read end of the previous pipe (the child has its copy).
+	// If we keep the write end open, the reader never sees EOF.
+	if (cmd->controlop == CMD_PIPE)
+		close(pipefd[1]);
+	if (*pass_pipefd != STDIN_FILENO)
+		close(*pass_pipefd);
+
+	// Pass our read end to the next command.
+	if (cmd->controlop == CMD_PIPE)
+		*pass_pipefd = pipefd[0];
+	else
+		*pass_pipefd = STDIN_FILENO;
 
 	// return the child process ID
 	return pid;
