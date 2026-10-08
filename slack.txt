@@ -1,5 +1,5 @@
-Name:
-NUID:
+Name: Apurva Tripathi
+NUID: 003167161
 slack days used: 0
 remaining slack days: 5
 Challenge I (optional): No
