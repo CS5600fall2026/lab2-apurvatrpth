@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <limits.h>
 #include "cmdparse.h"
 #include "cmdrun.h"
 
@@ -97,12 +98,46 @@
  *
  *   Implementation hints are given in the function body.
  */
+
+/* Number of arguments in argv, including argv[0]. */
+static int
+cmd_argc(command_t *cmd)
+{
+	int argc = 0;
+	while (cmd->argv[argc])
+		argc++;
+	return argc;
+}
+
+/* Parse the argument of "exit". Returns 0 and sets *status if 'arg'
+ * is a whole number, else returns -1. */
+static int
+parse_exit_status(const char *arg, int *status)
+{
+	char *end;
+	long val;
+
+	errno = 0;
+	val = strtol(arg, &end, 10);
+	if (*arg == '\0' || *end != '\0' || errno != 0)
+		return -1;
+	*status = (int) (val & 0xff);
+	return 0;
+}
+
 static pid_t
 cmd_exec(command_t *cmd, int *pass_pipefd)
 {
 	pid_t pid = -1;		// process ID for child
 	int pipefd[2];		// file descriptors for this process's pipe
 	int fd;
+	int argc = cmd_argc(cmd);
+	// Builtins should only change the shell itself when they are not
+	// part of a pipeline or run in the background (same as bash:
+	// "cd /tmp | cat" does not change the directory).
+	int in_shell = (cmd->controlop != CMD_PIPE
+			&& cmd->controlop != CMD_BACKGROUND
+			&& *pass_pipefd == STDIN_FILENO);
 
 	/* EXERCISE 4: Complete this function!
 	 * We've written some of the skeleton for you, but feel free to
@@ -271,6 +306,54 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 		if (!cmd->argv[0])
 			_exit(0);
 
+		// cd: exactly one argument. The child does the error
+		// reporting and gives the exit status; the parent does the
+		// real chdir() below.
+		if (strcmp(cmd->argv[0], "cd") == 0) {
+			if (argc != 2) {
+				fprintf(stderr, "cd: Syntax error! Wrong number of arguments!\n");
+				_exit(1);
+			}
+			if (chdir(cmd->argv[1]) < 0) {
+				perror("cd");
+				_exit(1);
+			}
+			_exit(0);
+		}
+
+		// our_pwd: no arguments, print the current directory.
+		if (strcmp(cmd->argv[0], "our_pwd") == 0) {
+			char buf[PATH_MAX];
+			if (argc != 1) {
+				fprintf(stderr, "pwd: Syntax error! Wrong number of arguments!\n");
+				_exit(1);
+			}
+			if (!getcwd(buf, sizeof(buf))) {
+				perror("pwd");
+				_exit(1);
+			}
+			printf("%s\n", buf);
+			fflush(stdout);
+			_exit(0);
+		}
+
+		// exit: the child only works out the status (and prints any
+		// error). The parent waits for it and then exits.
+		if (strcmp(cmd->argv[0], "exit") == 0) {
+			int status = 0;
+			if (argc > 2) {
+				fprintf(stderr, "exit: Syntax error! Too many arguments!\n");
+				_exit(1);
+			}
+			if (argc == 2 && parse_exit_status(cmd->argv[1], &status) < 0) {
+				// Like bash: complain, then exit with status 2.
+				fprintf(stderr, "exit: %s: numeric argument required\n",
+					cmd->argv[1]);
+				_exit(2);
+			}
+			_exit(status);
+		}
+
 		execvp(cmd->argv[0], cmd->argv);
 		// execvp() only returns on error.
 		perror(cmd->argv[0]);
@@ -291,6 +374,26 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 		*pass_pipefd = pipefd[0];
 	else
 		*pass_pipefd = STDIN_FILENO;
+
+	// Builtins that change the shell itself. These run AFTER the fork,
+	// so the child opens its redirection files in the old directory
+	// ("cd /tmp ; cd $HOME > foo" creates /tmp/foo, same as bash).
+	if (in_shell && !cmd->subshell && cmd->argv[0]) {
+		if (strcmp(cmd->argv[0], "cd") == 0 && argc == 2) {
+			// Errors are ignored here; the child already printed them.
+			int r = chdir(cmd->argv[1]);
+			(void) r;
+		} else if (strcmp(cmd->argv[0], "exit") == 0 && argc <= 2) {
+			// With more than one argument we print an error (in the
+			// child) and do not exit.
+			int status = 0;
+			if (argc == 2 && parse_exit_status(cmd->argv[1], &status) < 0)
+				status = 2;
+			// Let the child finish printing any message first.
+			waitpid(pid, NULL, 0);
+			exit(status);
+		}
+	}
 
 	// return the child process ID
 	return pid;
